@@ -11,7 +11,8 @@ import { ScrobblerBackend, TrackData } from ".";
 
 const logger = new Logger("AudioScrobblerRichPresence/ListenBrainz");
 
-const url = (path: string) => `https://listenbrainz.org${path}`;
+export const LISTENBRAINZ_URL = "https://listenbrainz.org";
+export const LISTENBRAINZ_API_URL = "https://api.listenbrainz.org";
 
 async function fetchCoverArt(releaseGroupMBID: string) {
     const res = await fetch(`https://coverartarchive.org/release-group/${releaseGroupMBID}`);
@@ -19,7 +20,7 @@ async function fetchCoverArt(releaseGroupMBID: string) {
     return res.json().then(json => json.images[0].thumbnails.large);
 }
 
-async function getUrls(additionalInfo: Record<string, string> | undefined, trackName: string, artistName: string, releaseName: string): Promise<Partial<TrackData>> {
+async function getUrls(url: (path: string) => string, additionalInfo: Record<string, string> | undefined, trackName: string, artistName: string, releaseName: string): Promise<Partial<TrackData>> {
     // Well tagged music will have MBIDs which we can use directly. These are optional but highly recommended in ListenBrainz scrobbles.
     // If your music doesn't have these, it's highly recommended to use https://picard.musicbrainz.org/ to automatically add them
     if (additionalInfo?.recording_mbid) {
@@ -68,38 +69,44 @@ async function getUrls(additionalInfo: Record<string, string> | undefined, track
     };
 }
 
-export const ListenBrainzScrobbler: ScrobblerBackend = {
-    name: "ListenBrainz",
-    id: "listenbrainz",
+export function makeListenBrainzScrobbler(name: string, id: string, webUrl: string, apiUrl: string): ScrobblerBackend {
+    const url = (path: string) => `${webUrl}${path}`;
 
-    async fetchTrackData(username: string, _apiKey?: string): Promise<TrackData | null> {
-        try {
-            const res = await fetch(`https://api.listenbrainz.org/1/user/${username}/playing-now`);
-            if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return {
+        name,
+        id,
 
-            const data = await res.json().then(json => json.payload?.listens[0]);
-            if (!data?.playing_now || !data?.track_metadata)
+        async fetchTrackData(username: string, _apiKey?: string): Promise<TrackData | null> {
+            try {
+                const res = await fetch(`${apiUrl}/1/user/${username}/playing-now`);
+                if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+
+                const data = await res.json().then(json => json.payload?.listens[0]);
+                if (!data?.playing_now || !data?.track_metadata)
+                    return null;
+
+                const { track_name, artist_name, release_name, additional_info } = data.track_metadata;
+
+                const trackData = {
+                    name: track_name || "Unknown",
+                    artist: artist_name,
+                    album: release_name || "Unknown",
+                    serviceName: additional_info?.music_service_name || additional_info?.submission_client,
+                    ...await getUrls(url, additional_info, track_name, artist_name, release_name)
+                } as TrackData;
+
+                return trackData;
+            } catch (e) {
+                logger.error(`Failed to query ${name} API`, e);
+                // will clear the rich presence if API fails
                 return null;
+            }
+        },
 
-            const { track_name, artist_name, release_name, additional_info } = data.track_metadata;
-
-            const trackData = {
-                name: track_name || "Unknown",
-                artist: artist_name,
-                album: release_name || "Unknown",
-                serviceName: additional_info?.music_service_name || additional_info?.submission_client,
-                ...await getUrls(additional_info, track_name, artist_name, release_name)
-            } as TrackData;
-
-            return trackData;
-        } catch (e) {
-            logger.error("Failed to query ListenBrainz API", e);
-            // will clear the rich presence if API fails
-            return null;
+        getUserURL(username: string): string {
+            return url(`/user/${username}`);
         }
-    },
+    };
+}
 
-    getUserURL(username: string): string {
-        return url(`/user/${username}`);
-    }
-};
+export const ListenBrainzScrobbler = makeListenBrainzScrobbler("ListenBrainz", "listenbrainz", LISTENBRAINZ_URL, LISTENBRAINZ_API_URL);

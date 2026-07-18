@@ -29,7 +29,7 @@ import { ActivityFlags, ActivityStatusDisplayType, ActivityType } from "@vencord
 import { ApplicationAssetUtils, AuthenticationStore, FluxDispatcher, PresenceStore } from "@webpack/common";
 
 import { LastFMScrobbler } from "./lastfm";
-import { ListenBrainzScrobbler } from "./listenbrainz";
+import { ListenBrainzScrobbler, makeListenBrainzScrobbler } from "./listenbrainz";
 
 export interface TrackData {
     name: string;
@@ -90,8 +90,17 @@ const settings = definePluginSettings({
             {
                 "label": "ListenBrainz",
                 "value": "listenbrainz"
+            },
+            {
+                "label": "Local (ListenBrainz-compatible)",
+                "value": "local"
             }
         ] as const
+    },
+    serverUrl: {
+        displayName: "Server URL",
+        description: "URL of your local ListenBrainz-compatible server",
+        type: OptionType.STRING,
     },
     apiKey: {
         displayName: "API Key",
@@ -212,6 +221,10 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         default: true,
     }
+}, {
+    serverUrl: {
+        hidden() { return this.store.scrobblerBackend !== "local"; }
+    }
 });
 
 migratePluginSettings("MusicRichPresence", "LastFMRichPresence");
@@ -261,6 +274,9 @@ export default definePlugin({
         if (!settings.store.username)
             return null;
 
+        if (settings.store.scrobblerBackend === "local" && !settings.store.serverUrl)
+            return null;
+
         if (settings.store.hideWithActivity) {
             if (PresenceStore.getActivities(AuthenticationStore.getId()).some(a => a.application_id !== DISCORD_APP_ID && a.type !== ActivityType.CUSTOM_STATUS)) {
                 return null;
@@ -274,7 +290,16 @@ export default definePlugin({
             }
         }
 
-        const scrobbler = settings.store.scrobblerBackend === "lastfm" ? LastFMScrobbler : ListenBrainzScrobbler;
+        const scrobbler = (() => {
+            switch (settings.store.scrobblerBackend) {
+                case "lastfm": return LastFMScrobbler;
+                case "local": {
+                    const serverUrl = settings.store.serverUrl!.replace(/\/+$/, "");
+                    return makeListenBrainzScrobbler("Local", "listenbrainz", serverUrl, serverUrl);
+                }
+                default: return ListenBrainzScrobbler;
+            }
+        })();
 
         const trackData = await scrobbler.fetchTrackData(settings.store.username, settings.store.apiKey || LASTFM_API_KEY);
         if (!trackData) return null;
